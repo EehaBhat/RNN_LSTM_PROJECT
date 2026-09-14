@@ -1,18 +1,18 @@
 # Write-up: RNN & LSTM from Scratch, and Why RNNs Struggle with Long-Term Dependencies
 
-##1. Overview
+## 1. Overview
 This project develops a vanilla Recurrent Neural Network (RNN) cell and a Long Short-Term Memory (LSTM) cell entirely from scratch using NumPy. Both architectures include manually derived Backpropagation Through Time (BPTT). The main objective is to study the vanishing gradient problem experimentally: how much gradients decrease as they propagate through time, and why LSTMs behave differently from vanilla RNNs.
 
 All implementations are located in src/. The tests/ directory contains numerical gradient checks and a forward-pass comparison with torch.nn.LSTMCell. The experimental results are generated using src/gradient_analysis.py and src/train.py.
 
-##2. The Long-Term Dependency Task
+## 2. The Long-Term Dependency Task
 The project uses a synthetic signal-in-noise recall problem, implemented in src/data.py. At the first timestep, t=0, the input contains a single bit of information, x_0 ∈ {-1, +1}. Every following input, from x_1 to x_{T-1}, consists of independent Gaussian noise that has no relevance to the correct answer.
 
 The network makes its prediction using the hidden state at the final timestep, T-1, and must classify the sign of the original input bit using a sigmoid output and binary cross-entropy loss. The sequence length is set to T=60, which satisfies the requirement of using at least 50 timesteps.
 
 This task is designed to isolate the ability to preserve information over time. The network does not need to learn complex patterns or interpret a meaningful sequence. It only needs to retain one bit of information introduced at the beginning and use it at the end. The experiment also examines whether the gradient associated with that bit can survive propagation backward through 59 timesteps.
 
-##3. Vanilla RNN: Forward Pass and Manual BPTT
+## 3. Vanilla RNN: Forward Pass and Manual BPTT
 
 Forward Pass
 The vanilla RNN implementation in src/rnn.py updates its hidden state at each timestep using:
@@ -52,7 +52,7 @@ Therefore, the gradient is effectively the result of multiplying many Jacobian m
 Correctness Verification
 The test file tests/test_gradcheck.py compares the analytically calculated gradients for all parameters with gradients obtained using central finite differences. The relative error is approximately 1e-9, confirming that the BPTT implementation is correct.
 
-##4. Demonstrating Vanishing Gradients
+## 4. Demonstrating Vanishing Gradients
 The script src/gradient_analysis.py performs one forward and backward pass on a freshly initialized, untrained network. It records the average norm of the hidden-state gradient, ||dL/dh_t||, at every timestep.
 
 Using an untrained model helps separate the effect of the architecture from changes that could occur during training.
@@ -84,7 +84,7 @@ Vanishing and exploding gradients arise from the same underlying process: repeat
 
 This explains why vanilla RNNs are highly sensitive to initialization and hyperparameters. Only a limited range of settings provides numerically stable gradient propagation.
 
-##5. LSTM: Forward Pass and Manual Backward Pass
+## 5. LSTM: Forward Pass and Manual Backward Pass
 
 Forward Pass
 The LSTM implementation in src/lstm.py combines four gates into a single linear transformation. The gates are arranged in the order (i, f, g, o) to match the layout used by nn.LSTMCell.
@@ -124,7 +124,7 @@ The project also includes tests/test_lstm_vs_pytorch.py, which compares the cust
 
 The test checks the hidden state and cell state at every timestep, with a tolerance of 1e-8. In the current environment, PyTorch is not installed, so the test reports that dependency is missing and skips the comparison gracefully. The test is ready to run when PyTorch is available.
 
-##6. Why the LSTM Avoids Vanishing Gradients: The Cell-State Highway
+## 6. Why the LSTM Avoids Vanishing Gradients: The Cell-State Highway
 The main advantage of an LSTM comes from the way its cell state carries information and gradients across time.
 Vanilla RNN
 
@@ -162,7 +162,7 @@ As the forget gate approaches 1, the gradient decay ratio moves from severe vani
 
 This experiment demonstrates that the LSTM's advantage comes from its near-identity cell-state pathway. The gates help because they allow information and gradients to pass through a route that avoids repeated squashing transformations.
 
-##7. Training Comparison and Gradient Clipping
+## 7. Training Comparison and Gradient Clipping
 The script src/train.py trains three models on the same signal-recall task for 3000 SGD steps with sequence length T=60:
 A vanilla RNN with recurrent weights scaled by 0.5.
 The same vanilla RNN using global-norm gradient clipping with max_norm=1.0.
@@ -179,7 +179,7 @@ This distinction is important: gradient clipping is intended to control explodin
 
 The LSTM, on the other hand, reaches almost perfect accuracy. Its training curve shows a noticeable improvement around step 1400, when it discovers the solution after an initial plateau.
 
-##8. Implementation Notes and Challenges
+## 8. Implementation Notes and Challenges
 Several implementation details were important during development.
 The LSTM backward pass requires handling two separate gradient contributions to the cell state: one coming from the hidden state through the output gate and tanh, and another carried backward from the next cell state through the forget gate. An early implementation accumulated the carried gradient one timestep out of phase. The finite-difference test detected the error, with approximately 100% relative error in the LSTM gradients.
 
@@ -187,7 +187,7 @@ The initial vanishing-gradient experiment used ordinary Xavier initialization fo
 
 The unscaled Xavier-initialized RNN can learn this particular task at sequence lengths of T=100–150. This is important because vanishing gradients are not an absolute failure condition for every RNN. The severity of the problem depends on the initialization, weights, and task. This is why vanilla RNNs are often described as fragile and difficult to tune rather than universally incapable of learning long-term dependencies.
 
-##9. Conclusion
+## 9. Conclusion
 This project implements vanilla RNN and LSTM forward and backward passes from scratch using NumPy. Both models are verified through finite-difference gradient checks, and the LSTM implementation is additionally designed for comparison with nn.LSTMCell.
 The experiments directly demonstrate the vanishing-gradient problem. Over 60 timesteps, the vanilla RNN's gradient decreases by approximately 17 orders of magnitude in the selected vanishing regime, while the LSTM maintains a nearly constant gradient.
 The underlying mechanism is clear. In a vanilla RNN, the backward gradient repeatedly passes through the tanh derivative and recurrent weight matrix. In an LSTM, the cell state provides a near-identity path through the forget gate:
