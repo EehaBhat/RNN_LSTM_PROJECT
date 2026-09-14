@@ -188,11 +188,15 @@ The initial vanishing-gradient experiment used ordinary Xavier initialization fo
 The unscaled Xavier-initialized RNN can learn this particular task at sequence lengths of T=100–150. This is important because vanishing gradients are not an absolute failure condition for every RNN. The severity of the problem depends on the initialization, weights, and task. This is why vanilla RNNs are often described as fragile and difficult to tune rather than universally incapable of learning long-term dependencies.
 
 ## 9. Conclusion
+
 This project implements vanilla RNN and LSTM forward and backward passes from scratch using NumPy. Both models are verified through finite-difference gradient checks, and the LSTM implementation is additionally designed for comparison with nn.LSTMCell.
 The experiments directly demonstrate the vanishing-gradient problem. Over 60 timesteps, the vanilla RNN's gradient decreases by approximately 17 orders of magnitude in the selected vanishing regime, while the LSTM maintains a nearly constant gradient.
 The underlying mechanism is clear. In a vanilla RNN, the backward gradient repeatedly passes through the tanh derivative and recurrent weight matrix. In an LSTM, the cell state provides a near-identity path through the forget gate:
 
 dc_{t-1} = dc_t * f_t
+
 When the forget gate remains open, gradients can travel across many timesteps with little attenuation. The forget-bias experiment confirms this mechanism by showing a continuous transition from severe gradient decay to nearly lossless propagation.
+
 Overall, the results show why LSTMs are better suited to learning long-term dependencies in situations where vanilla RNNs struggle with gradient propagation.
+
 ---
