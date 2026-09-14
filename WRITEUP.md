@@ -1,279 +1,138 @@
 # Write-up: RNN & LSTM from Scratch, and Why RNNs Struggle with Long-Term Dependencies
 
-## 1. Overview
-
-This project implements a vanilla RNN cell and an LSTM cell from scratch in
-NumPy, including hand-derived backpropagation through time (BPTT) for both,
-then uses them to investigate the vanishing gradient problem directly:
-by how much do gradients actually shrink as they travel back through time in
-each architecture, and why does the LSTM behave differently?
-
-All code is in `src/`; correctness is checked in `tests/` (numerical
-gradient checking and a forward-pass equivalence check against
-`torch.nn.LSTMCell`); `src/gradient_analysis.py` and `src/train.py` produce
-the results discussed below.
-
-## 2. The long-term dependency task
-
-We use a synthetic **signal-in-noise recall task** (`src/data.py`): the
-input at `t=0` is a single bit of information, `x_0 in {-1, +1}`; every
-subsequent input `x_1, ..., x_{T-1}` is independent Gaussian noise,
-irrelevant to the answer. The network reads out its prediction from the
-hidden state at the final timestep `T-1` and must recover `sign(x_0)` as a
-binary classification problem (sigmoid + binary cross-entropy). We use
-`T = 60` throughout, satisfying the "at least 50 steps" requirement.
-
-This task isolates memory from everything else: there's no compositional
-structure to learn, no long input sequence to parse — the only question is
-whether one bit of information, injected once, survives being carried
-forward (in the forward pass) and whether gradient information about that
-bit survives propagating backward, `T-1` steps later.
-
-## 3. Vanilla RNN: forward pass and manual BPTT
-
-**Forward** (`src/rnn.py`), per timestep:
-
-```
+1. Overview
+This project develops a vanilla Recurrent Neural Network (RNN) cell and a Long Short-Term Memory (LSTM) cell entirely from scratch using NumPy. Both architectures include manually derived Backpropagation Through Time (BPTT). The main objective is to study the vanishing gradient problem experimentally: how much gradients decrease as they propagate through time, and why LSTMs behave differently from vanilla RNNs.
+All implementations are located in src/. The tests/ directory contains numerical gradient checks and a forward-pass comparison with torch.nn.LSTMCell. The experimental results are generated using src/gradient_analysis.py and src/train.py.
+2. The Long-Term Dependency Task
+The project uses a synthetic signal-in-noise recall problem, implemented in src/data.py. At the first timestep, t=0, the input contains a single bit of information, x_0 ∈ {-1, +1}. Every following input, from x_1 to x_{T-1}, consists of independent Gaussian noise that has no relevance to the correct answer.
+The network makes its prediction using the hidden state at the final timestep, T-1, and must classify the sign of the original input bit using a sigmoid output and binary cross-entropy loss. The sequence length is set to T=60, which satisfies the requirement of using at least 50 timesteps.
+This task is designed to isolate the ability to preserve information over time. The network does not need to learn complex patterns or interpret a meaningful sequence. It only needs to retain one bit of information introduced at the beginning and use it at the end. The experiment also examines whether the gradient associated with that bit can survive propagation backward through 59 timesteps.
+3. Vanilla RNN: Forward Pass and Manual BPTT
+Forward Pass
+The vanilla RNN implementation in src/rnn.py updates its hidden state at each timestep using:
 a_t = x_t @ Wxh.T + h_{t-1} @ Whh.T + bh
 h_t = tanh(a_t)
-```
-
-with a linear readout `y = h_T @ Why.T + by` applied once, at the final step.
-
-**Backward.** Let `dh_t = dL/dh_t`. The only two places `h_t` is used are
-(a) in computing `a_{t+1}` via `Whh`, and (b) at the final step, in the
-readout. So for `t = T-1`: `dh_{T-1} = dY @ Why`. For all other `t`, the
-only source of gradient is from the future step:
-
-```
-da_t     = dh_t * (1 - tanh(a_t)^2)        # tanh'(a_t) = 1 - h_t^2
+After processing the sequence, a linear readout is applied once to the final hidden state:
+y = h_T @ Why.T + by
+Backward Pass
+Let dh_t represent the gradient of the loss with respect to the hidden state at timestep t.
+At the final timestep, the gradient comes from the output layer:
+dh_{T-1} = dY @ Why
+At earlier timesteps, the gradient is passed backward from the future hidden state. The main backward equations are:
+da_t     = dh_t * (1 - tanh(a_t)^2)
 dWxh    += da_t.T @ x_t
 dWhh    += da_t.T @ h_{t-1}
 dbh     += sum(da_t, axis=0)
-dh_{t-1} = da_t @ Whh                       # gradient handed to the previous step
-```
+dh_{t-1} = da_t @ Whh
+The backward procedure is implemented using a reversed loop over the sequence in VanillaRNN.backward.
+The important feature of this process is that each backward step involves multiplication by the recurrent weight matrix Whh and the derivative of the tanh activation. Since the tanh derivative is at most 1 and becomes very small when the activation saturates near -1 or +1, the gradient can decrease rapidly as it travels backward.
+Over many timesteps, the gradient is approximately:
+dh_0 ≈ dh_{T-1} * product[t=1 to T-1](
+    tanh'(a_t) * Whh
+)
+Therefore, the gradient is effectively the result of multiplying many Jacobian matrices together. Whether it shrinks or grows depends mainly on the spectral properties of Whh and the degree of saturation of the tanh units. This repeated multiplication explains why vanilla RNNs are susceptible to vanishing and exploding gradients.
+Correctness Verification
+The test file tests/test_gradcheck.py compares the analytically calculated gradients for all parameters with gradients obtained using central finite differences. The relative error is approximately 1e-9, confirming that the BPTT implementation is correct.
+4. Demonstrating Vanishing Gradients
+The script src/gradient_analysis.py performs one forward and backward pass on a freshly initialized, untrained network. It records the average norm of the hidden-state gradient, ||dL/dh_t||, at every timestep.
+Using an untrained model helps separate the effect of the architecture from changes that could occur during training.
+For the vanilla RNN, the recurrent weights are multiplied by 0.5 relative to Xavier initialization. This places the recurrent matrix in a regime where its effective spectral radius is below 1.
+For T=60, the results are:
+Model	Gradient at t=0	Gradient at t=59	Decay ratio
+Vanilla RNN	3.2e-20	3.6e-3	1.1e17
+LSTM	4.1e-3	3.9e-3	0.95
+The vanilla RNN's gradient decreases by approximately 17 orders of magnitude over 60 timesteps, whereas the LSTM's gradient remains nearly constant.
+The complete gradient curve is stored in results/vanishing_gradients.png. On a logarithmic scale, the RNN produces an almost straight line, showing geometric decay. The LSTM curve remains approximately flat.
+Effect of Recurrent Weight Scaling
+Vanishing gradients are not an unavoidable outcome for every RNN configuration. They depend strongly on the recurrent weight scale.
+The experiment in results/rnn_scale_sweep.csv tests recurrent weight scaling factors of 0.5, 1.0, 1.5, and 2.0.
+Weight scale	Ratio (last/first)	Behavior
+0.5	1.1e17	Vanishing
+1.0	~1.0	Approximately balanced
+1.5	1.4e-2	Mildly exploding
+2.0	1.2e-4	Strongly exploding
+Vanishing and exploding gradients arise from the same underlying process: repeated multiplication by Jacobians whose magnitudes are below or above 1. The difference is whether the repeated product becomes extremely small or extremely large.
+This explains why vanilla RNNs are highly sensitive to initialization and hyperparameters. Only a limited range of settings provides numerically stable gradient propagation.
+5. LSTM: Forward Pass and Manual Backward Pass
+Forward Pass
+The LSTM implementation in src/lstm.py combines four gates into a single linear transformation. The gates are arranged in the order (i, f, g, o) to match the layout used by nn.LSTMCell.
+At each timestep:
+z_t = x_t @ Wih.T + h_{t-1} @ Whh.T + b
 
-This recursion is implemented as a `for t in reversed(range(T))` loop in
-`VanillaRNN.backward`. Critically, note the recursive structure: `dh_{t-1}`
-depends on `dh_t` through a multiplication by `Whh` *and* an elementwise
-multiplication by `tanh'(a_t)`, which is always `<= 1` (and close to `0`
-whenever `h_t` is saturated near `+-1`). Unrolled across `T` steps, this
-means:
+i_t = sigmoid(z_i)
+f_t = sigmoid(z_f)
+g_t = tanh(z_g)
+o_t = sigmoid(z_o)
 
-```
-dh_0  ~  dh_{T-1} * prod_{t=1}^{T-1} [ tanh'(a_t) * Whh ]
-```
-
-a product of `T-1` Jacobians. This single equation is the entire reason
-vanilla RNNs are architecturally prone to vanishing (or exploding)
-gradients: whether that product shrinks or grows geometrically as `T`
-increases is controlled almost entirely by the spectral properties of
-`Whh` and how saturated the `tanh` units are — not by anything specific to
-the task.
-
-**Correctness.** `tests/test_gradcheck.py` verifies every parameter
-gradient (`Wxh`, `Whh`, `bh`, `Why`, `by`) against central finite
-differences; all match to a relative error of `~1e-9`, confirming the BPTT
-derivation and implementation are correct.
-
-## 4. Demonstrating vanishing gradients
-
-`src/gradient_analysis.py` takes one batch from the task and runs a single
-forward + backward pass through a **freshly initialized, untrained**
-network, then records `||dL/dh_t||` (averaged over the batch) at every
-timestep. Using untrained networks isolates the architectural effect from
-whatever a specific training run happens to do to the weights.
-
-With the RNN's recurrent weights (`Wxh`, `Whh`) scaled down by `0.5` from
-their Xavier initialization (putting the effective spectral radius of `Whh`
-below 1), we get (`T=60`):
-
-| | `\|\|dL/dh_0\|\|` (59 steps back) | `\|\|dL/dh_59\|\|` (at the loss) | ratio |
-|---|---|---|---|
-| Vanilla RNN | `3.2e-20` | `3.6e-3` | `1.1e17` |
-| LSTM (default init) | `4.1e-3` | `3.9e-3` | `0.95` |
-
-The RNN's gradient shrinks by **17 orders of magnitude** over 60 steps; the
-LSTM's gradient is essentially flat. See `results/vanishing_gradients.png`
-for the full per-timestep curve (log scale) — the RNN's line is a nearly
-perfect straight line on a log axis (i.e., genuinely geometric decay),
-while the LSTM's line is flat.
-
-**This isn't a fixed property of RNNs — it's a property of the recurrent
-weight scale.** `results/rnn_scale_sweep.csv` shows the same experiment
-with the recurrent weight matrix scaled by `0.5, 1.0, 1.5, 2.0`:
-
-| weight scale | ratio (last/first) | regime |
-|---|---|---|
-| 0.5 | `1.1e17` | vanishing |
-| 1.0 | `~1.0` | roughly balanced |
-| 1.5 | `1.4e-2` | mildly exploding |
-| 2.0 | `1.2e-4` | strongly exploding |
-
-Both vanishing and exploding gradients are the *same* underlying mechanism
-(a repeated product of Jacobians with spectral norm below or above 1) —
-just opposite ends of it. This is also why vanilla RNNs are notoriously
-sensitive to initialization and hyperparameters: there is a narrow regime
-where training is even numerically stable, let alone effective.
-
-## 5. LSTM: forward pass and manual backward pass
-
-**Forward** (`src/lstm.py`), per timestep, with stacked gate weights in
-order `(i, f, g, o)` to match `nn.LSTMCell`'s layout:
-
-```
-z_t = x_t @ Wih.T + h_{t-1} @ Whh.T + b       # (4H,), split into 4 chunks
-i_t = sigmoid(z_i)      f_t = sigmoid(z_f)
-g_t = tanh(z_g)         o_t = sigmoid(z_o)
 c_t = f_t * c_{t-1} + i_t * g_t
 h_t = o_t * tanh(c_t)
-```
-
-**Backward.** The standard LSTM backward equations (implemented in
-`LSTM.backward`):
-
-```
+Here, i_t is the input gate, f_t is the forget gate, g_t is the candidate cell update, and o_t is the output gate.
+The cell state c_t stores information across timesteps, while the hidden state h_t is generated from the cell state through the output gate.
+Backward Pass
+The LSTM backward equations are implemented in LSTM.backward.
+The main derivatives are:
 do      = dh_t * tanh(c_t)
-dc_t   += dh_{t}(from output) * o_t * (1 - tanh(c_t)^2)
-df      = dc_t * c_{t-1}          dc_{t-1} = dc_t * f_t
+dc_t   += dh_t_from_output * o_t * (1 - tanh(c_t)^2)
+
+df      = dc_t * c_{t-1}
+dc_{t-1} = dc_t * f_t
+
 di      = dc_t * g_t
 dg      = dc_t * i_t
-(then multiply each by its gate's own derivative: sigmoid'(.) or tanh'(.),
- and backprop through the stacked linear layer as usual)
-```
-
-**Correctness.** Same finite-difference check as the RNN; all five
-parameter tensors (`Wih`, `Whh`, `b`, `Why`, `by`) match to `~1e-7`
-relative error or better.
-
-**Equivalence with `nn.LSTMCell`.** `tests/test_lstm_vs_pytorch.py` copies
-`nn.LSTMCell`'s randomly initialized weights directly into our
-implementation (gate order and matrix layout match exactly) and runs both
-on identical input. This environment doesn't have PyTorch installed
-(sandboxed, no internet access to install it), so the test degrades
-gracefully with an explicit message when `torch` is missing — but the test
-is fully written and will run with `pip install torch`. It compares `h_t`
-and `c_t` at every timestep and asserts they match to within `1e-8`.
-
-## 6. Why the LSTM doesn't vanish: the cell-state highway
-
-It's not enough to say "the gates help" — the mechanism is specific.
-Compare the two backward recursions for the *cell*/*hidden* state that
-carries information across time:
-
-- **RNN:** `dh_{t-1} = tanh'(a_t) * Whh^T * dh_t`. Every single step
-  multiplies by `tanh'(a_t) <= 1` *and* by `Whh`. If `Whh`'s spectral norm
-  is below 1 (which Xavier-style initializations, or any reasonably
-  regularized training, tend to encourage), this product shrinks
-  geometrically, and there is no way for the gradient to travel through `T`
-  steps without picking up a multiplicative penalty at *every single step*.
-
-- **LSTM:** `dc_{t-1} = dc_t * f_t`. This is the key line. There is no
-  `tanh'` or any other squashing derivative multiplied in here — the cell
-  state's backward path is a direct multiplication by the forget gate's
-  *value*, not its derivative. If the network learns (or is initialized)
-  to keep `f_t` close to 1, gradient can flow through the cell state across
-  arbitrarily many steps with almost no attenuation, because `1 * 1 * ... *
-  1 ~ 1`. The hidden state `h_t` still goes through `tanh` and the output
-  gate, but that path runs alongside the cell-state highway, not instead of
-  it — critically, `c_t` is *additively* updated (`c_t = f_t*c_{t-1} +
-  i_t*g_t`), not passed through a saturating nonlinearity at every step the
-  way `h_t` is in a vanilla RNN.
-
-This is confirmed directly by `results/forget_bias_sweep.csv`, which
-initializes the LSTM's forget-gate bias at different values (which sets the
-gate's value at `t=0`, before any training) and re-measures the same
-gradient ratio:
-
-| forget bias | mean forget gate | `\|\|dL/dh_0\|\|` | `\|\|dL/dh_59\|\|` | ratio |
-|---|---|---|---|---|
-| 0.0 | 0.50 | `4.1e-15` | `3.9e-3` | `9.5e11` |
-| 1.0 | 0.73 | `2.3e-7` | `3.9e-3` | `1.7e4` |
-| 2.0 | 0.88 | `1.8e-3` | `3.9e-3` | `2.1` |
-| 3.0 | 0.95 | `4.1e-3` | `3.9e-3` | `0.95` |
-| 5.0 | 0.99 | `9.1e-3` | `4.4e-3` | `0.48` |
-
-This is a clean, direct demonstration of the mechanism: as the forget gate
-is pushed closer to 1, the LSTM's gradient decay ratio moves from
-"vanishes just as badly as an RNN" (`bias=0`, ratio `~1e12`) to "essentially
-lossless" (`bias=5`, ratio `~0.5`) — purely as a function of how open the
-cell-state highway is, with *everything else about the architecture held
-fixed*. Gating doesn't help because gates are exotic nonlinear machinery;
-it helps specifically because it creates a path where information (and
-gradient) can be propagated by near-identity multiplication instead of by a
-repeated squashing transformation.
-
-## 7. Training comparison and gradient clipping (stretch goal)
-
-`src/train.py` trains three models on the same task (`T=60`, 3000 SGD
-steps): a vanilla RNN initialized in the vanishing regime (`Whh` scaled by
-`0.5`, as in Section 4), the same RNN with global-norm gradient clipping
-(`max_norm=1.0`), and an LSTM with default initialization. Held-out
-evaluation after training:
-
-| model | loss | accuracy |
-|---|---|---|
-| Vanilla RNN | 0.693 (= ln 2) | 0.524 (chance) |
-| Vanilla RNN + gradient clipping | 0.693 | 0.524 (chance) |
-| LSTM | 0.0015 | 1.000 |
-
-The RNN never learns anything better than chance — its loss sits exactly at
-`ln(2)`, the loss of a classifier that always predicts `p=0.5`. **Gradient
-clipping does not fix this.** Looking at `results/training_comparison.png`,
-clipping (with `max_norm=1.0`) is triggered on `0` out of `3000` training
-steps — the raw gradient norm never even *reaches* the clipping threshold,
-because the problem here is that gradient components have decayed toward
-zero, not that they've exploded. This is an important distinction: gradient
-clipping is a targeted fix for *exploding* gradients (the regime in Section
-4's weight-scale sweep with `scale > 1`); it has no mechanism for rescuing
-gradients that have vanished, because there's no large value to clip in the
-first place. The LSTM, in contrast, converges to near-perfect accuracy —
-note the visible "phase transition" in the training-loss curve around step
-~1400, where it suddenly discovers the solution after an initial plateau.
-
-## 8. Implementation notes and things that went wrong
-
-- Getting the LSTM backward pass right required being careful about the
-  *two* separate incoming gradients at each cell-state step: one from
-  `dh_t` (through `o_t * tanh(c_t)`) and one carried over from
-  `dc_{t+1}` via `dc_t = dc_{t+1} * f_{t+1}` **applied at the next
-  iteration**, not the current one. An early version accumulated
-  `dc_next` one step out of phase, which the finite-difference check
-  caught immediately (all LSTM gradients failed with ~100% relative error)
-  and made obvious exactly which line was wrong.
-- The first version of the vanishing-gradient demo used plain Xavier
-  initialization for the RNN and found *no* vanishing at all (decay ratio
-  `~1.0`). This is expected, not a bug: Xavier initialization is
-  specifically designed to keep activation/gradient variance roughly
-  constant across layers at initialization, which is precisely the
-  condition that *avoids* vanishing/exploding at `t=0`. Demonstrating the
-  problem required deliberately moving the recurrent weight scale away
-  from that balanced point (Section 4), which then also motivated
-  including the full weight-scale and forget-bias sweeps as evidence that
-  this is a controllable, mechanistic effect and not an artifact of one
-  particular seed.
-- A useful sanity check: with default (unscaled) Xavier initialization,
-  the vanilla RNN actually *does* learn this particular task, even at
-  `T=100–150`. This matters for the write-up's honesty: vanishing gradients
-  are a real, mechanistic, and easily reproduced problem (Sections 4 and
-  6), but whether a *specific* RNN with *specific* hyperparameters fails on
-  a *specific* task is a matter of degree, not an absolute law — which is
-  exactly why the problem historically showed up as "RNNs are fragile and
-  hard to tune" as much as "RNNs categorically cannot learn long-range
-  dependencies."
-
-## 9. Conclusion
-
-Both the vanilla RNN's and the LSTM's forward and backward passes were
-implemented from scratch and verified against finite-difference gradient
-checks (and the LSTM additionally against `nn.LSTMCell`). Vanishing
-gradients were demonstrated directly by measuring `||dL/dh_t||` across time
-in an untrained network, showing 17 orders of magnitude of decay over 60
-steps in the RNN, and then reproduced in an actual training run where the
-RNN never escapes chance-level accuracy while the LSTM converges to ~100%.
-The mechanism is precisely locatable: the RNN's backward path multiplies by
-`tanh'(.) * Whh` at every step, while the LSTM's cell state offers an
-additive, near-identity path (`dc_{t-1} = dc_t * f_t`) whenever the forget
-gate stays open — a claim directly verified by sweeping the forget-gate
-bias and watching the gradient-decay ratio move continuously from
-"RNN-like" to "lossless."
+The gate gradients are then multiplied by the derivatives of their respective activation functions. The resulting gradients are propagated through the stacked linear layer.
+Correctness and Equivalence
+The LSTM parameter gradients are checked using finite differences. The relative error is approximately 1e-7 or better for all five parameter tensors: Wih, Whh, b, Why, and by.
+The project also includes tests/test_lstm_vs_pytorch.py, which compares the custom LSTM with nn.LSTMCell. It copies the PyTorch weights into the NumPy implementation and evaluates both models on identical inputs.
+The test checks the hidden state and cell state at every timestep, with a tolerance of 1e-8. In the current environment, PyTorch is not installed, so the test reports that dependency is missing and skips the comparison gracefully. The test is ready to run when PyTorch is available.
+6. Why the LSTM Avoids Vanishing Gradients: The Cell-State Highway
+The main advantage of an LSTM comes from the way its cell state carries information and gradients across time.
+Vanilla RNN
+The RNN backward recurrence is:
+dh_{t-1} = tanh'(a_t) * Whh.T * dh_t
+At every timestep, the gradient is multiplied by both the recurrent matrix and the tanh derivative. If the spectral norm of Whh is below 1, the repeated product tends to shrink.
+Consequently, the gradient accumulates a multiplicative penalty at every timestep, making long-range propagation difficult.
+LSTM
+The LSTM cell-state recurrence is:
+dc_{t-1} = dc_t * f_t
+This is the key difference. The cell-state gradient is multiplied by the forget gate's value rather than by the derivative of a saturating tanh activation.
+If the forget gate remains close to 1, the gradient can travel through many timesteps with little attenuation:
+1 * 1 * ... * 1 ≈ 1
+The hidden state still passes through tanh and the output gate, but the cell-state pathway operates alongside that transformation. The cell state is updated additively:
+c_t = f_t * c_{t-1} + i_t * g_t
+Unlike the vanilla RNN hidden state, it is not repeatedly passed through a saturating nonlinearity at every timestep.
+Forget-Gate Bias Experiment
+The experiment in results/forget_bias_sweep.csv changes the initial forget-gate bias and measures the resulting gradient ratio.
+Forget bias	Mean forget gate	Gradient ratio
+0.0	0.50	9.5e11
+1.0	0.73	1.7e4
+2.0	0.88	2.1
+3.0	0.95	0.95
+5.0	0.99	0.48
+As the forget gate approaches 1, the gradient decay ratio moves from severe vanishing to nearly lossless propagation.
+This experiment demonstrates that the LSTM's advantage comes from its near-identity cell-state pathway. The gates help because they allow information and gradients to pass through a route that avoids repeated squashing transformations.
+7. Training Comparison and Gradient Clipping
+The script src/train.py trains three models on the same signal-recall task for 3000 SGD steps with sequence length T=60:
+A vanilla RNN with recurrent weights scaled by 0.5.
+The same vanilla RNN using global-norm gradient clipping with max_norm=1.0.
+An LSTM with default initialization.
+The held-out evaluation results are:
+Model	Loss	Accuracy
+Vanilla RNN	0.693 (≈ ln 2)	0.524
+Vanilla RNN + gradient clipping	0.693	0.524
+LSTM	0.0015	1.000
+The vanilla RNN does not learn beyond chance-level performance. Its loss remains close to ln(2), which corresponds to a classifier predicting a probability of 0.5.
+Gradient clipping does not improve the result. It is not activated during any of the 3000 training steps because the raw gradient norm never reaches the clipping threshold.
+This distinction is important: gradient clipping is intended to control exploding gradients, not restore gradients that have already vanished. In the vanishing regime, there is no large gradient to clip.
+The LSTM, on the other hand, reaches almost perfect accuracy. Its training curve shows a noticeable improvement around step 1400, when it discovers the solution after an initial plateau.
+8. Implementation Notes and Challenges
+Several implementation details were important during development.
+The LSTM backward pass requires handling two separate gradient contributions to the cell state: one coming from the hidden state through the output gate and tanh, and another carried backward from the next cell state through the forget gate. An early implementation accumulated the carried gradient one timestep out of phase. The finite-difference test detected the error, with approximately 100% relative error in the LSTM gradients.
+The initial vanishing-gradient experiment used ordinary Xavier initialization for the RNN and did not show significant vanishing. This is expected because Xavier initialization aims to maintain activation and gradient variance near initialization. To demonstrate the problem clearly, the recurrent weight scale was deliberately changed from the balanced regime.
+The unscaled Xavier-initialized RNN can learn this particular task at sequence lengths of T=100–150. This is important because vanishing gradients are not an absolute failure condition for every RNN. The severity of the problem depends on the initialization, weights, and task. This is why vanilla RNNs are often described as fragile and difficult to tune rather than universally incapable of learning long-term dependencies.
+9. Conclusion
+This project implements vanilla RNN and LSTM forward and backward passes from scratch using NumPy. Both models are verified through finite-difference gradient checks, and the LSTM implementation is additionally designed for comparison with nn.LSTMCell.
+The experiments directly demonstrate the vanishing-gradient problem. Over 60 timesteps, the vanilla RNN's gradient decreases by approximately 17 orders of magnitude in the selected vanishing regime, while the LSTM maintains a nearly constant gradient.
+The underlying mechanism is clear. In a vanilla RNN, the backward gradient repeatedly passes through the tanh derivative and recurrent weight matrix. In an LSTM, the cell state provides a near-identity path through the forget gate:
+dc_{t-1} = dc_t * f_t
+When the forget gate remains open, gradients can travel across many timesteps with little attenuation. The forget-bias experiment confirms this mechanism by showing a continuous transition from severe gradient decay to nearly lossless propagation.
+Overall, the results show why LSTMs are better suited to learning long-term dependencies in situations where vanilla RNNs struggle with gradient propagation.
