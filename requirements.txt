@@ -1,0 +1,6 @@
+numpy>=1.24
+matplotlib>=3.7
+
+# Only needed for tests/test_lstm_vs_pytorch.py (external reference check).
+# Everything else in this project is pure NumPy by design.
+torch>=2.0
